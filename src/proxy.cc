@@ -660,7 +660,9 @@ ncclResult_t ncclProxySaveOp(ncclComm_t comm, struct ncclProxyOp* op, bool* just
       const ssize_t size = op->nbytes/comm->nRanks;
       const int rank = comm->rank, nranks = comm->nRanks;
       int *nstepsSend = NULL, *nstepsRecv = NULL;
-      PatRSAlgorithm<char> algo(op->chunkSize, NCCL_STEPS, 16, 0, size, size, op->chunkSize, rank, nranks);
+      // Absolute buffer offsets only affect addresses, not PAT's peer/step schedule.
+      PatRSAlgorithm<char> algo(op->chunkSize, NCCL_STEPS, NCCL_PAT_NWORKERS/WARP_SIZE,
+          0, size, size, op->chunkSize, rank, nranks);
       struct ncclPatStep ps = {0};
       NCCLCHECKGOTO(ncclCalloc(&nstepsSend, log2Up(nranks)), result, exit_pat_up);
       NCCLCHECKGOTO(ncclCalloc(&nstepsRecv, log2Up(nranks)), result, exit_pat_up);
@@ -694,7 +696,8 @@ ncclResult_t ncclProxySaveOp(ncclComm_t comm, struct ncclProxyOp* op, bool* just
       const ssize_t size = op->nbytes/comm->nRanks;
       const int rank = comm->rank, nranks = comm->nRanks;
       int *nstepsSend = NULL, *nstepsRecv = NULL;
-      PatAGAlgorithm<char> algo(op->chunkSize, NCCL_STEPS, 16, 0, size, size, op->chunkSize, rank, nranks);
+      PatAGAlgorithm<char> algo(op->chunkSize, NCCL_STEPS, NCCL_PAT_NWORKERS/WARP_SIZE,
+          0, size, size, op->chunkSize, rank, nranks);
       struct ncclPatStep ps = {0};
       NCCLCHECKGOTO(ncclCalloc(&nstepsSend, log2Up(nranks)), result, exit_pat_down);
       NCCLCHECKGOTO(ncclCalloc(&nstepsRecv, log2Up(nranks)), result, exit_pat_down);

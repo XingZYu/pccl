@@ -357,33 +357,29 @@ class RunWorkColl<ncclFuncAllReduce, NCCL_ALGO_COLLNET, NCCL_PROTO_SIMPLE, FUNC,
 #else
     const int nthreads = (work->nWarps * WARP_SIZE);
 #endif
-    const int nChannels = (work->channelHi - work->channelLo + 1);
-    const int bid = (getShmemPtr(getShmemComm(work))->channelId - work->channelLo) % nChannels;
     struct ncclKernelComm* comm = getShmemComm(work);
     struct ncclDevChannel* channel = &(getShmemPtr(comm)->channel);
     struct ncclTree* tree = &channel->collTree;
-    const int stepSize = comm->buffSizes[NCCL_PROTO_SIMPLE] / (sizeof(T)*NCCL_STEPS);
-    int chunkSize = work->collnet.chunkCount;
-    const ssize_t minChunkSize = nthreads*8*sizeof(uint64_t) / sizeof(T);
-    const ssize_t loopSize = nChannels*chunkSize;
-    const ssize_t size = work->collnet.count;
-
-    if (loopSize > size) {
-      chunkSize = DIVUP(size, nChannels*minChunkSize)*minChunkSize;
-    }
+    const int channelId = getShmemPtr(comm)->channelId;
+    const int pairedOffset = comm->nChannels / 2;
+    const bool isUp = channelId < pairedOffset;
+    // Both halves of a CollNet pair process the same CBD partition.
+    const int partChannel = isUp ? channelId : channelId - pairedOffset;
+    ssize_t size, begin, partCount, chunkSize;
+    ncclCollCbdPart(work, partChannel, NCCL_PROTO_SIMPLE, sizeof(T), &size, &begin, &partCount, &chunkSize);
+    const ssize_t end = begin + partCount;
 
     // Compute pointers
     const T * __restrict__ thisInput = (const T*)work->sendbuff;
     T * __restrict__ thisOutput = (T*)work->recvbuff;
 
-    if (blockIdx.x < nChannels) { // first half of the channels do reduce
+    if (isUp) { // first half of the channels do reduce
       Primitives<T, FUNC, ProtoSimple<UNROLL, 1, 1>, 1, 1, 0, 0>
         prims(tid, nthreads, tree->down, &tree->up, NULL, comm, work->redOpArg, getShmemPtr(comm)->groups, 0, 0, 0, work);
 
-      for (ssize_t gridOffset = 0; gridOffset < size; gridOffset += loopSize) {
+      for (ssize_t offset = begin; offset < end; offset += chunkSize) {
         // Up
-        ssize_t offset = gridOffset + bid*chunkSize;
-        int nelem = min(chunkSize, size-offset);
+        int nelem = min(chunkSize, end-offset);
         if (tree->up == -1) {
           prims.recvReduceCopy(thisInput+offset, thisOutput+offset, nelem);
         } else if (tree->down[0] == -1) {
@@ -394,13 +390,12 @@ class RunWorkColl<ncclFuncAllReduce, NCCL_ALGO_COLLNET, NCCL_PROTO_SIMPLE, FUNC,
       }
     }
 
-    if (blockIdx.x >= nChannels) { // second half of the channels do broadcast
+    if (!isUp) { // second half of the channels do broadcast
       Primitives<T, FUNC, ProtoSimple<UNROLL, 1, 1>, 1, 1, 0, 0>
         prims(tid, nthreads, &tree->up, tree->down, NULL, comm, work->redOpArg, getShmemPtr(comm)->groups, 0, 0, 0, work);
-      for (ssize_t gridOffset = 0; gridOffset < size; gridOffset += loopSize) {
+      for (ssize_t offset = begin; offset < end; offset += chunkSize) {
         // Down
-        ssize_t offset = gridOffset + bid*chunkSize;
-        int nelem = min(chunkSize, size-offset);
+        int nelem = min(chunkSize, end-offset);
         if (tree->up == -1) {
           prims.send(thisOutput+offset, nelem);
         } else if (tree->down[0] == -1) {
@@ -498,31 +493,27 @@ class RunWorkColl<ncclFuncAllReduce, NCCL_ALGO_COLLNET, NCCL_PROTO_LL, FUNC, T, 
   __device__ void run(struct ncclDevWorkColl* work) {
     const int tid = threadIdx.x;
     const int nthreads = (work->nWarps * WARP_SIZE);
-    const int nChannels = (work->channelHi - work->channelLo + 1);
-    const int bid = (getShmemPtr(getShmemComm(work))->channelId - work->channelLo) % nChannels;
     struct ncclKernelComm* comm = getShmemComm(work);
     struct ncclDevChannel* channel = &(getShmemPtr(comm)->channel);
     struct ncclTree* tree = &channel->collTree;
-    const int stepLines = comm->buffSizes[NCCL_PROTO_LL] / (sizeof(union ncclLLFifoLine)*NCCL_STEPS);
-    ssize_t chunkSize = stepLines * sizeof(uint64_t) / sizeof(T);
-    const ssize_t minChunkSize = nthreads*sizeof(uint64_t) / sizeof(T);
-    const ssize_t loopSize = nChannels*chunkSize;
-    const ssize_t size = work->collnet.count;
-
-    if (loopSize > size) {
-      chunkSize = DIVUP(size, nChannels*minChunkSize)*minChunkSize;
-    }
+    const int channelId = getShmemPtr(comm)->channelId;
+    const int pairedOffset = comm->nChannels / 2;
+    const bool isUp = channelId < pairedOffset;
+    // Both halves of a CollNet pair process the same CBD partition.
+    const int partChannel = isUp ? channelId : channelId - pairedOffset;
+    ssize_t size, begin, partCount, chunkSize;
+    ncclCollCbdPart(work, partChannel, NCCL_PROTO_LL, sizeof(T), &size, &begin, &partCount, &chunkSize);
+    const ssize_t end = begin + partCount;
 
     // Compute pointers
     const T * __restrict__ thisInput = (const T*)work->sendbuff;
     T * __restrict__ thisOutput = (T*)work->recvbuff;
 
-    if (blockIdx.x < nChannels) { // first half of the channels do reduce
-      Primitives<T, FUNC, ProtoLL, 1, 1, 0, 0> LLprims(tid, nthreads, tree->down, &tree->up, NULL, comm, work->redOpArg);
-      for (ssize_t gridOffset = 0; gridOffset < size; gridOffset += loopSize) {
+    if (isUp) { // first half of the channels do reduce
+      Primitives<T, FUNC, ProtoLL, 1, 1, 0, 0> LLprims(tid, nthreads, tree->down, &tree->up, NULL, comm, work->redOpArg, getShmemPtr(comm)->groups, 0, 0, 0, work);
+      for (ssize_t offset = begin; offset < end; offset += chunkSize) {
         // Up
-        ssize_t offset = gridOffset + bid*chunkSize;
-        int nelem = min(chunkSize, size-offset);
+        int nelem = min(chunkSize, end-offset);
         if (tree->up == -1) {
           LLprims.recvReduceCopy(thisInput+offset, thisOutput+offset, nelem);
         } else if (tree->down[0] == -1) {
@@ -533,12 +524,11 @@ class RunWorkColl<ncclFuncAllReduce, NCCL_ALGO_COLLNET, NCCL_PROTO_LL, FUNC, T, 
       }
     }
 
-    if (blockIdx.x >= nChannels) { // second half of the channels do broadcast
-      Primitives<T, FUNC, ProtoLL, 1, 1, 0, 0> LLprims(tid, nthreads, &tree->up, tree->down, NULL, comm, work->redOpArg);
-      for (ssize_t gridOffset = 0; gridOffset < size; gridOffset += loopSize) {
+    if (!isUp) { // second half of the channels do broadcast
+      Primitives<T, FUNC, ProtoLL, 1, 1, 0, 0> LLprims(tid, nthreads, &tree->up, tree->down, NULL, comm, work->redOpArg, getShmemPtr(comm)->groups, 0, 0, 0, work);
+      for (ssize_t offset = begin; offset < end; offset += chunkSize) {
         // Down
-        ssize_t offset = gridOffset + bid*chunkSize;
-        int nelem = min(chunkSize, size-offset);
+        int nelem = min(chunkSize, end-offset);
         if (tree->up == -1) {
           LLprims.send(thisOutput+offset, nelem);
         } else if (tree->down[0] == -1) {

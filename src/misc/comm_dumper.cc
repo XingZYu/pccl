@@ -90,20 +90,18 @@ ncclResult_t dumpP2pWorkToFile(FILE* file, struct ncclDevWorkP2p* work, uint16_t
   return ncclSuccess;
 }
 
-ncclResult_t dumpCollWorkToFile(FILE* file, struct ncclDevWorkColl* work, uint16_t index, int indentLevel, uint16_t funcId) {
-  const int algorithm = (funcId - NUM_P2P_FUNC) / NCCL_NUM_PROTOCOLS % NCCL_NUM_ALGORITHMS;
-  const bool usesCbd = algorithm == NCCL_ALGO_RING || algorithm == NCCL_ALGO_TREE || algorithm == NCCL_ALGO_FC;
+ncclResult_t dumpCollWorkToFile(FILE* file, struct ncclDevWorkColl* work, uint16_t index, int indentLevel, uint16_t /*funcId*/) {
   const char* indentStr = getIndentStr(indentLevel);
   fprintf(file, "%s%d: ", indentStr, index);
   fprintf(file, "work nThreads:%d ", (work->nWarps * WARP_SIZE));
   fprintf(file, "sendRegUsed:%d, recvRegUsed:%d sendbuff %p recvbuff %p ",
     work->sendRegUsed, work->recvRegUsed, work->sendbuff, work->recvbuff);
-  fprintf(file, "coll, cbd:%u, countLo/count:%zu, countMid/chunk:%zu, countHi:%zu, chunkGrainsLo/Mid/Hi:%u/%u/%u, root:%u, channelLo:%u, channelHi:%u, ",
-    unsigned(usesCbd), usesCbd ? work->cbd.countLo : work->collnet.count,
-    usesCbd ? work->cbd.countMid : work->collnet.chunkCount, usesCbd ? work->cbd.countHi : 0,
-    usesCbd ? unsigned(work->cbd.chunkGrainsLo) : 0,
-    usesCbd ? unsigned(work->cbd.chunkGrainsMid) : 0,
-    usesCbd ? unsigned(work->cbd.chunkGrainsHi) : 0, work->root, work->channelLo, work->channelHi);
+  fprintf(file, "coll, countLo:%zu, countMid:%zu, countHi:%zu, chunkGrainsLo/Mid/Hi:%u/%u/%u, root:%u, channelLo:%u, channelHi:%u, ",
+    work->cbd.countLo,
+    work->cbd.countMid, work->cbd.countHi,
+    unsigned(work->cbd.chunkGrainsLo),
+    unsigned(work->cbd.chunkGrainsMid),
+    unsigned(work->cbd.chunkGrainsHi), work->root, work->channelLo, work->channelHi);
   fprintf(file, "\n");
 
   return ncclSuccess;

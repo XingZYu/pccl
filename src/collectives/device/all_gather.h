@@ -230,14 +230,9 @@ namespace {
     const int tid = threadIdx.x;
     const int nthreads = (work->nWarps * WARP_SIZE);
     
-    const int nChannels = (work->channelHi - work->channelLo + 1);
-    const int bid = (getShmemPtr(getShmemComm(work))->channelId - work->channelLo) % nChannels;
-
-    const ssize_t count = work->collnet.count;
-    ssize_t channelCount = (count + nChannels - 1) / nChannels;
-    ssize_t channelOffset = bid * channelCount;
-    if (channelOffset + channelCount > count) channelCount = count - channelOffset;
-    const int chunkCount = work->collnet.chunkCount;
+    ssize_t count, channelOffset, channelCount, chunkCount;
+    ncclCollCbdPart(work, getShmemPtr(comm)->channelId, NCCL_PROTO_SIMPLE, sizeof(T),
+        &count, &channelOffset, &channelCount, &chunkCount);
 
     static constexpr int nworkers = NCCL_PAT_NWORKERS;
     struct ncclPatShmem* shmem = ncclPatShmemPtr(comm);

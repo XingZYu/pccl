@@ -227,20 +227,13 @@ struct alignas(16) ncclDevWorkColl {
   uintptr_t recvbuffOffset;
   uintptr_t* sendbuffRmtAddrs;
   uintptr_t* recvbuffRmtAddrs;
-  union {
-    // Continuous-byte-distribution scheduling. The lo and hi channels are of
-    // different size than the channels in the middle.
-    struct {
-      size_t countLo, countMid, countHi;
-      // Chunk counts where units are ncclProtoGrainSize(protocol) bytes
-      uint64_t chunkGrainsLo:21, chunkGrainsMid:21, chunkGrainsHi:21;
-    } cbd;
-    // CollNet and PAT retain their count and chunk semantics.
-    struct {
-      size_t count; // Total size, not divided per channel.
-      size_t chunkCount;
-    } collnet;
-  };
+  // Continuous-byte-distribution scheduling. The lo and hi channels are of
+  // different size than the channels in the middle.
+  struct {
+    size_t countLo, countMid, countHi;
+    // Chunk counts where units are ncclProtoGrainSize(protocol) bytes
+    uint64_t chunkGrainsLo:21, chunkGrainsMid:21, chunkGrainsHi:21;
+  } cbd;
   uint64_t redOpArg;
 #ifdef NO_TSM
   // Without thread shared memory, device primitives locate comm via work.
@@ -381,6 +374,8 @@ struct ncclShmemGroup {
 struct alignas(16) ncclKernelComm {
   int rank;
   int nRanks;
+  // CollNet pairs channel c with c + nChannels/2, independently of task width.
+  int nChannels;
   int buffSizes[NCCL_NUM_PROTOCOLS];
   int* rankToLocalRank;
 

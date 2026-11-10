@@ -773,6 +773,7 @@ static ncclResult_t commAlloc(ncclComm_t comm, ncclComm_t parentComm, int ndev, 
 
 static ncclResult_t devCommSetup(ncclComm_t comm) {
   NCCLCHECK(ncclStrongStreamAcquireUncaptured(&comm->sharedRes->deviceStream));
+  comm->hostDevComm.comm.nChannels = comm->nChannels;
   // Duplicate the channels on the device
   int nChannels = std::max(comm->nChannels, comm->p2pnChannels);
   NCCLCHECK(ncclHggcCallocAsyncLegacy(&comm->hostDevComm.comm.channels, nChannels, &(comm->devMemUsed), comm->sharedRes->deviceStream.hggcStream, comm->memManager));
