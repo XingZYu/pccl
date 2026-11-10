@@ -235,7 +235,7 @@ struct alignas(16) ncclDevWorkColl {
       // Chunk counts where units are ncclProtoGrainSize(protocol) bytes
       uint64_t chunkGrainsLo:21, chunkGrainsMid:21, chunkGrainsHi:21;
     } cbd;
-    // Existing non-Ring algorithms retain their count and chunk semantics.
+    // CollNet and PAT retain their count and chunk semantics.
     struct {
       size_t count; // Total size, not divided per channel.
       size_t chunkCount;

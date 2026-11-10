@@ -177,7 +177,8 @@ ncclResult_t dumpP2pWork(char* lineBuff, struct ncclDevWorkP2p* work, uint16_t i
 }
 
 ncclResult_t dumpCollWork(char* lineBuff, struct ncclDevWorkColl* work, uint16_t index, uint16_t funcId) {
-  const bool isRing = (funcId - NUM_P2P_FUNC) / NCCL_NUM_PROTOCOLS % NCCL_NUM_ALGORITHMS == NCCL_ALGO_RING;
+  const int algorithm = (funcId - NUM_P2P_FUNC) / NCCL_NUM_PROTOCOLS % NCCL_NUM_ALGORITHMS;
+  const bool usesCbd = algorithm == NCCL_ALGO_RING || algorithm == NCCL_ALGO_TREE || algorithm == NCCL_ALGO_FC;
   const char* indentStr = " ";
   int offset = strlen(lineBuff);
   offset += sprintf(lineBuff + offset, "%s%d: ", indentStr, index);
@@ -185,11 +186,11 @@ ncclResult_t dumpCollWork(char* lineBuff, struct ncclDevWorkColl* work, uint16_t
   offset += sprintf(lineBuff + offset, "sendRegUsed:%d, recvRegUsed:%d sendbuff %p recvbuff %p ",
     work->sendRegUsed, work->recvRegUsed, work->sendbuff, work->recvbuff);
   offset += sprintf(lineBuff + offset, "coll, cbd:%u, countLo/count:%zu, countMid/chunk:%zu, countHi:%zu, chunkGrainsLo/Mid/Hi:%u/%u/%u, root:%u, channelLo:%u, channelHi:%u, ",
-    unsigned(isRing), isRing ? work->cbd.countLo : work->collnet.count,
-    isRing ? work->cbd.countMid : work->collnet.chunkCount, isRing ? work->cbd.countHi : 0,
-    isRing ? unsigned(work->cbd.chunkGrainsLo) : 0,
-    isRing ? unsigned(work->cbd.chunkGrainsMid) : 0,
-    isRing ? unsigned(work->cbd.chunkGrainsHi) : 0, work->root, work->channelLo, work->channelHi);
+    unsigned(usesCbd), usesCbd ? work->cbd.countLo : work->collnet.count,
+    usesCbd ? work->cbd.countMid : work->collnet.chunkCount, usesCbd ? work->cbd.countHi : 0,
+    usesCbd ? unsigned(work->cbd.chunkGrainsLo) : 0,
+    usesCbd ? unsigned(work->cbd.chunkGrainsMid) : 0,
+    usesCbd ? unsigned(work->cbd.chunkGrainsHi) : 0, work->root, work->channelLo, work->channelHi);
   offset += sprintf(lineBuff + offset, "\n");
   return ncclSuccess;
 }
@@ -843,7 +844,7 @@ static ncclResult_t getLoopInfo(struct ncclInfo* info) {
 }
 
 static ncclResult_t computeColl(struct ncclInfo* info, struct ncclDevWorkColl* work, struct ncclProxyOp* proxyOp,
-                                bool partitionedRing, uint32_t* chunkGrains = nullptr) {
+                                bool usesCbd, uint32_t* chunkGrains = nullptr) {
 #ifdef NO_TSM
   work->comm = info->comm->devComm;
 #endif
@@ -851,18 +852,25 @@ static ncclResult_t computeColl(struct ncclInfo* info, struct ncclDevWorkColl* w
   // Set nstepsPerLoop and nchunksPerLoop
   NCCLCHECK(getPatternInfo(info));
   NCCLCHECK(getLoopInfo(info));
+  if (info->algorithm == NCCL_ALGO_FC) {
+    // FC communicates with all peers in parallel. Non-LL AllReduce has scatter
+    // and gather phases; LL AllReduce exchanges the full local chunk once.
+    info->nstepsPerLoop = info->coll == ncclFuncAllReduce && info->protocol != NCCL_PROTO_LL ? 2 : 1;
+    info->nchunksPerLoop = (info->coll == ncclFuncAllGather || info->coll == ncclFuncReduceScatter ||
+        (info->coll == ncclFuncAllReduce && info->protocol != NCCL_PROTO_LL)) ? info->comm->nRanks : 1;
+  }
 
   work->sendbuff = info->sendbuff;
   work->recvbuff = info->recvbuff;
   work->root = info->root;
-  if (!partitionedRing) work->collnet.count = info->count;
+  if (!usesCbd) work->collnet.count = info->count;
   if (info->nThreads % WARP_SIZE != 0 || info->nThreads / WARP_SIZE >= 256) return ncclInternalError;
   work->nWarps = info->nThreads / WARP_SIZE;
   work->redOpArgIsPtr = info->opFull.scalarArgIsPtr;
   work->redOpArg = info->opFull.scalarArg;
 
   int stepSize   = info->comm->buffSizes[info->protocol]/NCCL_STEPS;
-  const bool useTaskSteps = info->algorithm == NCCL_ALGO_RING &&
+  const bool useTaskSteps = (info->algorithm == NCCL_ALGO_RING || info->algorithm == NCCL_ALGO_FC) &&
       (info->protocol == NCCL_PROTO_SIMPLE || info->protocol == NCCL_PROTO_SIGNAL ||
        info->protocol == NCCL_PROTO_SIMPLE_BULK || info->protocol == NCCL_PROTO_SIGNAL_BULK ||
        info->protocol == NCCL_PROTO_SIMPLE_BULK_AR);
@@ -870,7 +878,7 @@ static ncclResult_t computeColl(struct ncclInfo* info, struct ncclDevWorkColl* w
   int sliceSteps = useTaskSteps ? info->sliceSteps : 1;
   int chunkSize  = stepSize*chunkSteps;
 
-  // Compute lastChunkSize
+  // Choose the chunk size before encoding the per-channel payload.
   if (info->algorithm == NCCL_ALGO_TREE &&
       (info->protocol == NCCL_PROTO_SIMPLE || info->protocol == NCCL_PROTO_SIGNAL
        || info->protocol == NCCL_PROTO_SIMPLE_BULK || info->protocol == NCCL_PROTO_SIGNAL_BULK
@@ -881,8 +889,6 @@ static ncclResult_t computeColl(struct ncclInfo* info, struct ncclDevWorkColl* w
       while (info->nBytes / (info->nChannels*chunkSize) < info->comm->channels[0].tree.depth*4 && chunkSize > 65536) chunkSize /= 2;
       while (info->nBytes / (info->nChannels*chunkSize) < info->comm->channels[0].tree.depth && chunkSize > 32768) chunkSize /= 2;
     }
-    // Use lastChunkSize as chunkSize
-    work->collnet.chunkCount = chunkSize / ncclTypeSize(info->datatype);
   } else if (info->algorithm == NCCL_ALGO_COLLNET &&
       (info->protocol == NCCL_PROTO_SIMPLE || info->protocol == NCCL_PROTO_SIGNAL
        || info->protocol == NCCL_PROTO_SIMPLE_BULK || info->protocol == NCCL_PROTO_SIGNAL_BULK
@@ -901,7 +907,7 @@ static ncclResult_t computeColl(struct ncclInfo* info, struct ncclDevWorkColl* w
     while (chunkSize*info->nChannels*32 > info->nBytes && chunkSize > 65536) chunkSize /= 2;
     // Use lastChunkSize as chunkSize
     work->collnet.chunkCount = chunkSize / ncclTypeSize(info->datatype);
-  } else if (info->protocol == NCCL_PROTO_LL && !partitionedRing) {
+  } else if (info->protocol == NCCL_PROTO_LL && !usesCbd) {
     const ssize_t sliceSize = stepSize*sizeof(uint64_t)/sizeof(union ncclLLFifoLine);
     const ssize_t loopSize = info->nChannels*info->nchunksPerLoop*(ssize_t)sliceSize;
     work->collnet.chunkCount = DIVUP((info->nBytes-(info->nBytes/loopSize)*loopSize), info->nChannels*info->nchunksPerLoop);
@@ -913,16 +919,15 @@ static ncclResult_t computeColl(struct ncclInfo* info, struct ncclDevWorkColl* w
     float nstepsLL128 = 1+log2i(nNodes) + 0.1*ppn;
     while (info->nBytes / (info->nChannels*chunkSize) < nstepsLL128*64/ppn && chunkSize > 131072) chunkSize /= 2;
     while (info->nBytes / (info->nChannels*chunkSize) < nstepsLL128*16/ppn && chunkSize > 32768) chunkSize /= 2;
-    // Use lastChunkSize as chunkSize
-    work->collnet.chunkCount = chunkSize*NCCL_LL128_DATAELEMS/(NCCL_LL128_LINEELEMS*ncclTypeSize(info->datatype));
   }
 
   // Compute nSteps for proxies
   int chunkEffectiveSize = chunkSize;
-  if (partitionedRing) {
+  if (usesCbd) {
     // Compute the payload once for both the device loop and proxy progress.
     int typeSize = ncclTypeSize(info->datatype);
-    chunkEffectiveSize = (stepSize / typeSize) * typeSize * chunkSteps;
+    chunkEffectiveSize = useTaskSteps ? (stepSize / typeSize) * typeSize * chunkSteps :
+        (chunkSize / typeSize) * typeSize;
     if (info->protocol == NCCL_PROTO_LL) {
       chunkEffectiveSize = (chunkEffectiveSize / sizeof(union ncclLLFifoLine)) * sizeof(uint64_t);
     } else if (info->protocol == NCCL_PROTO_LL128) {
@@ -931,13 +936,13 @@ static ncclResult_t computeColl(struct ncclInfo* info, struct ncclDevWorkColl* w
       chunkEffectiveSize = (chunkEffectiveSize / wireSlice) * dataSlice;
     }
     if (chunkEffectiveSize == 0) {
-      WARN("Ring %s %s FIFO chunk is too small (%d bytes)", ncclFuncToString(info->coll), ncclProtoStr[info->protocol], chunkSize);
+      WARN("Collective %s %s FIFO chunk is too small (%d bytes)", ncclFuncToString(info->coll), ncclProtoStr[info->protocol], chunkSize);
       return ncclInvalidArgument;
     }
     const size_t grainSize = ncclProtoGrainSize(info->protocol);
     chunkEffectiveSize = chunkEffectiveSize / grainSize * grainSize;
     if (chunkEffectiveSize == 0 || size_t(chunkEffectiveSize) / grainSize >= (1u << 21)) {
-      WARN("Ring chunk size %d cannot be represented in protocol grains %zu", chunkEffectiveSize, grainSize);
+      WARN("Collective chunk size %d cannot be represented in protocol grains %zu", chunkEffectiveSize, grainSize);
       return ncclInvalidArgument;
     }
     *chunkGrains = chunkEffectiveSize / grainSize;
@@ -952,7 +957,7 @@ static ncclResult_t computeColl(struct ncclInfo* info, struct ncclDevWorkColl* w
   proxyOp->nsteps = info->nstepsPerLoop * nLoops * chunkSteps;
   proxyOp->sliceSteps = sliceSteps;
   proxyOp->chunkSteps = chunkSteps;
-  proxyOp->chunkSize = partitionedRing ? chunkEffectiveSize : chunkSize;
+  proxyOp->chunkSize = usesCbd ? chunkEffectiveSize : chunkSize;
   proxyOp->protocol = info->protocol;
   proxyOp->dtype = info->datatype;
   proxyOp->redOp = info->algorithm != NCCL_ALGO_COLLNET ? ncclNumOps : // Only set redOp when using CollNet
@@ -1659,7 +1664,7 @@ static ncclResult_t scheduleCollTasksToPlan(ncclComm_t comm, struct ncclKernelPl
     if (!testBudget(budget, plan->nWorkBatches + DIVUP(nPlanColls, 4), plan->workBytes + workBytes + node->size)) break;
     ++nPlanColls;
     workBytes += node->size;
-    if (task->algorithm == NCCL_ALGO_RING) {
+    if (task->algorithm == NCCL_ALGO_RING || task->algorithm == NCCL_ALGO_TREE || task->algorithm == NCCL_ALGO_FC) {
       trafficBytes += std::max(minTrafficPerChannel, task->count * ncclTypeSize(task->datatype) *
           collTrafficPerByte(task->func, comm->nRanks, task->protocol));
       nChannels = std::min(comm->nChannels, nChannels + task->nChannels);
@@ -1695,13 +1700,25 @@ static ncclResult_t scheduleCollTasksToPlan(ncclComm_t comm, struct ncclKernelPl
     info.nBytes = head->nBytes;
 
     if (!plan->usingExtKernel) {
-      const bool partitionedRing = info.algorithm == NCCL_ALGO_RING;
+      const bool usesCbd = info.algorithm == NCCL_ALGO_RING || info.algorithm == NCCL_ALGO_TREE ||
+          info.algorithm == NCCL_ALGO_FC;
       size_t cellsLo = 0, cellsHi = 0, elementsPerCell = 0, trafficPerElement = 0;
-      if (partitionedRing) {
+      if (usesCbd) {
+        // FC connections exist only on the channels selected by its topology graph.
+        const int channelLimit = info.algorithm == NCCL_ALGO_FC ? comm->fcnChannels : comm->nChannels;
+        if (channelLimit <= 0) return ncclInternalError;
+        if (channelId >= channelLimit) {
+          channelId = 0;
+          currentTraffic = 0;
+        } else if (currentTraffic >= trafficPerChannel && channelId + 1 < channelLimit) {
+          ++channelId;
+          currentTraffic = 0;
+        }
         const size_t eltSize = ncclTypeSize(info.datatype);
         const size_t trafficPerByte = collTrafficPerByte(info.coll, comm->nRanks, info.protocol);
         size_t cellSize = ROUNDUP(DIVUP(minTrafficPerChannel, trafficPerByte), 16);
-        if (tuneSingleColl && comm->nNodes > 1 && info.coll == ncclFuncAllGather && info.protocol == NCCL_PROTO_LL128 &&
+        if (tuneSingleColl && comm->nNodes > 1 && info.algorithm == NCCL_ALGO_RING &&
+            info.coll == ncclFuncAllGather && info.protocol == NCCL_PROTO_LL128 &&
             !devWork->sendRegUsed && !devWork->recvRegUsed && pcclParamUseStaticLaunchGrid() != 1) {
           // Small inter-node LL128 transfers pay for each nonempty channel and its slice padding.
           // Reuse PPU's half-CTA payload grain as the minimum partition, not a fixed channel cap.
@@ -1721,13 +1738,13 @@ static ncclResult_t scheduleCollTasksToPlan(ncclComm_t comm, struct ncclKernelPl
         const size_t cells = DIVUP(info.count * eltSize, cellSize);
         size_t cellsPerChannel = std::min(cells, DIVUP(trafficPerChannel, trafficPerCell));
         if (cells == 0) return ncclInternalError;
-        cellsLo = channelId + 1 == comm->nChannels ? cells :
+        cellsLo = channelId + 1 == channelLimit ? cells :
             std::min(cells, DIVUP(trafficPerChannel - currentTraffic, trafficPerCell));
         int nMid = (cells - cellsLo) / cellsPerChannel;
         cellsHi = (cells - cellsLo) % cellsPerChannel;
         int used = (cellsLo != 0) + nMid + (cellsHi != 0);
-        if (channelId + used > comm->nChannels) {
-          nMid = comm->nChannels - channelId - 2;
+        if (channelId + used > channelLimit) {
+          nMid = channelLimit - channelId - 2;
           cellsPerChannel = (cells - cellsLo) / (nMid + 1);
           cellsHi = cellsPerChannel + (cells - cellsLo) % (nMid + 1);
         }
@@ -1762,7 +1779,7 @@ static ncclResult_t scheduleCollTasksToPlan(ncclComm_t comm, struct ncclKernelPl
 
       struct ncclProxyOp proxyOp = {}, proxyRegions[3] = {};
       info.funcIndex = FUNC_INDEX(info.coll, info.opFull.op, info.datatype, info.algorithm, info.protocol);
-      if (partitionedRing) {
+      if (usesCbd) {
         const size_t counts[3] = {devWork->cbd.countLo, devWork->cbd.countMid, devWork->cbd.countHi};
         uint32_t chunks[3] = {};
         for (int part = 0; part < 3; ++part) {
@@ -1795,17 +1812,18 @@ static ncclResult_t scheduleCollTasksToPlan(ncclComm_t comm, struct ncclKernelPl
 
       int nChannels = info.nChannels;
       int nSubChannels = (proxyOp.pattern == ncclPatternCollTreeUp || proxyOp.pattern == ncclPatternCollTreeDown) ? 2 : 1;
-      if (nChannels * nSubChannels > comm->nChannels) return ncclInternalError;
+      const int channelLimit = info.algorithm == NCCL_ALGO_FC ? comm->fcnChannels : comm->nChannels;
+      if (devWork->channelLo + nChannels * nSubChannels > channelLimit) return ncclInternalError;
       uint64_t opCount = uint64_t(plan->collOpCount++) << 1;
       for (int bid = 0; bid < nChannels * nSubChannels; ++bid) {
         const int channelId = devWork->channelLo + bid;
-        if (partitionedRing) {
+        if (usesCbd) {
           const int region = channelId == devWork->channelLo ? 0 : channelId == devWork->channelHi ? 2 : 1;
           proxyOp = proxyRegions[region];
           size_t count, offset, bytes, chunkCount;
           const size_t eltSize = ncclTypeSize(info.datatype);
           ncclCollCbdPart(devWork, channelId, info.protocol, eltSize, &count, &offset, &bytes, &chunkCount);
-          VERBOSE(NCCL_COLL, "Ring %s %s: channels [%u,%u] channel %d offset %zu bytes %zu payload %zu steps %d workBytes %zu",
+          VERBOSE(NCCL_COLL, "CBD %s %s: channels [%u,%u] channel %d offset %zu bytes %zu payload %zu steps %d workBytes %zu",
                   ncclFuncToString(info.coll), ncclProtoStr[info.protocol], unsigned(devWork->channelLo),
                   unsigned(devWork->channelHi), channelId, offset * eltSize, bytes * eltSize,
                   chunkCount * eltSize, proxyOp.nsteps, sizeof(*devWork));

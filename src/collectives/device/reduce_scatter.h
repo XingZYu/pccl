@@ -76,30 +76,15 @@ namespace {
     } else {
       nthreads = (work->nWarps * WARP_SIZE) - WARP_SIZE;
     }
-    const int nChannels = (work->channelHi - work->channelLo + 1);
-    const int bid = (getShmemPtr(getShmemComm(work))->channelId - work->channelLo) % nChannels;
     struct ncclKernelComm* comm = getShmemComm(work);
     struct ncclDevChannel* channel = &(getShmemPtr(comm)->channel);
     struct ncclFC* fc = &channel->fc;
 
     const int rank = comm->rank;
     const int nranks = comm->nRanks;
-    int stepSize;
-    ssize_t chunkSize;
-    ssize_t minChunkSize;
-    if (Proto::Id == NCCL_PROTO_LL) {
-      stepSize = comm->buffSizes[NCCL_PROTO_LL] / (sizeof(union ncclLLFifoLine)*NCCL_STEPS);
-      chunkSize = stepSize * sizeof(uint64_t) / sizeof(T);
-    } else if (Proto::Id == NCCL_PROTO_LL128) {
-      stepSize = comm->buffSizes[NCCL_PROTO_LL128] / (sizeof(uint64_t)*NCCL_STEPS);
-      chunkSize = stepSize*NCCL_LL128_DATAELEMS*sizeof(uint64_t) / (NCCL_LL128_LINEELEMS*sizeof(T));
-      minChunkSize = (NCCL_LL128_SHMEM_ELEMS_PER_THREAD*nthreads*NCCL_LL128_DATAELEMS*sizeof(uint64_t))/(NCCL_LL128_LINEELEMS*sizeof(T));
-    } else {
-      stepSize = comm->buffSizes[NCCL_PROTO_SIMPLE] / (sizeof(T) * NCCL_STEPS);
-      chunkSize = stepSize * REDUCESCATTER_CHUNKSTEPS;
-    }
-    const ssize_t loopSize = nChannels * chunkSize;
-    const ssize_t size = work->collnet.count;
+    ssize_t size, begin, partCount, chunkSize;
+    ncclCollCbdPart(work, getShmemPtr(comm)->channelId, Proto::Id, sizeof(T), &size, &begin, &partCount, &chunkSize);
+    const ssize_t end = begin + partCount;
 
     const T* __restrict__ thisInput = (const T*)work->sendbuff;
     T* __restrict__ thisOutput = (T*)work->recvbuff;
@@ -107,11 +92,8 @@ namespace {
     Primitives<T, FUNC, Proto, NCCL_MAX_FC_ARITY-1, NCCL_MAX_FC_ARITY-1, 0, 0>
       prims(tid, nthreads, fc->peerRanks, fc->peerRanks, NULL, comm, work->redOpArg, getShmemPtr(comm)->groups, 0, 0, 0, NULL);
 
-    for (ssize_t gridOffset = 0; gridOffset < size; gridOffset += loopSize) {
-      int realChunkSize = min(chunkSize, DIVUP(size-gridOffset,nChannels));
-      ALIGN_SIZE(realChunkSize, nthreads*sizeof(uint64_t)/sizeof(T));
-      ssize_t chunkOffset = gridOffset + bid * realChunkSize;
-      int nelem = min(realChunkSize, size-chunkOffset);
+    for (ssize_t chunkOffset = begin; chunkOffset < end; chunkOffset += chunkSize) {
+      int nelem = min(chunkSize, end-chunkOffset);
       int totalElem = nelem * nranks;
       prims.scatter(thisInput+chunkOffset, totalElem, nelem, size);
       prims.recvReduceCopy(thisInput+rank*size+chunkOffset, thisOutput+chunkOffset, nelem, /*postOp=*/true);
