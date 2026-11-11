@@ -28,10 +28,8 @@ namespace {
     struct ncclDevChannel* channel = &(getShmemPtr(comm)->channel);
     struct ncclRing* ring = &channel->ring;
     const int nranks = comm->nRanks;
-    ssize_t size, begin, partCount, chunkSize;
-    ncclCollCbdPart(work, getShmemPtr(comm)->channelId, Proto::Id, sizeof(T), &size, &begin, &partCount, &chunkSize);
-    const ssize_t end = begin + partCount;
-    const ssize_t loopSize = chunkSize;
+    ssize_t count, partOffset, partCount, chunkCount;
+    ncclCollCbdPart(work, getShmemPtr(comm)->channelId, Proto::Id, sizeof(T), &count, &partOffset, &partCount, &chunkCount);
 
     // Compute pointers
     const T * __restrict__ thisInput = (const T*)work->sendbuff;
@@ -40,33 +38,33 @@ namespace {
     // DIRECT=1, LL/LL128 do not use
     Primitives<T, FUNC, Proto, 1, 1, 1, 0> prims(tid, nthreads, &ring->prev, &ring->next, thisOutput, comm, work->redOpArg, getShmemPtr(comm)->groups, 0, 0, 0, NULL);
 
-    for (ssize_t gridOffset = begin; gridOffset < end; gridOffset += loopSize) {
-      const ssize_t chunkOffset = gridOffset;
-      const int nelem = min(chunkSize, end - chunkOffset);
+    for (size_t elemOffset = 0; elemOffset < partCount; elemOffset += chunkCount) {
+      const int nelem = min(chunkCount, partCount - elemOffset);
+      const ssize_t dataOffset = partOffset + elemOffset;
 
       /////////////// begin AllGather steps ///////////////
 
       // step 0: push data to next GPU
       int rankDest = ring->devUserRanks[0];
-      ssize_t offset = chunkOffset + rankDest * size;
+      ssize_t offset = dataOffset + rankDest * count;
 
-      if (thisInput + chunkOffset == thisOutput + offset) { // In place
-        prims.directSend(thisInput+chunkOffset, offset, nelem);
+      if (thisInput + dataOffset == thisOutput + offset) { // In place
+        prims.directSend(thisInput+dataOffset, offset, nelem);
       } else {
-        prims.directCopySend(thisInput+chunkOffset, thisOutput+offset, offset, nelem);
+        prims.directCopySend(thisInput+dataOffset, thisOutput+offset, offset, nelem);
       }
 
       // k-2 steps: copy to next GPU
       for (int j=1; j<nranks-1; ++j) {
         rankDest = ring->devUserRanks[nranks-j];
-        offset = chunkOffset + rankDest * size;
+        offset = dataOffset + rankDest * count;
 
         prims.directRecvCopySend(thisOutput+offset, offset, nelem);
       }
 
       // Make final copy from buffer to dest.
       rankDest = ring->devUserRanks[1];
-      offset = chunkOffset + rankDest * size;
+      offset = dataOffset + rankDest * count;
 
       // Final wait/copy.
       prims.directRecv(thisOutput+offset, offset, nelem);

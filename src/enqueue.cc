@@ -1762,6 +1762,15 @@ static ncclResult_t scheduleCollTasksToPlan(ncclComm_t comm, struct ncclKernelPl
         uint32_t chunks[3] = {};
         for (int part = 0; part < 3; ++part) {
           if (counts[part] == 0) continue;
+          // All other inputs and work fields are shared by the three regions.
+          // Equal counts therefore have identical chunk and proxy parameters.
+          int previous = 0;
+          while (previous < part && counts[previous] != counts[part]) ++previous;
+          if (previous < part) {
+            chunks[part] = chunks[previous];
+            proxyRegions[part] = proxyRegions[previous];
+            continue;
+          }
           ncclInfo partInfo = info;
           partInfo.count = counts[part];
           partInfo.nBytes = ncclFuncMaxSendRecvCount(info.coll, comm->nRanks, counts[part]) * ncclTypeSize(info.datatype);
