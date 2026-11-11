@@ -90,9 +90,8 @@ namespace {
 
     const int nranks = comm->nRanks;
     const int rank = comm->rank;
-    ssize_t size, begin, partCount, chunkSize;
-    ncclCollCbdPart(work, getShmemPtr(comm)->channelId, Proto::Id, sizeof(T), &size, &begin, &partCount, &chunkSize);
-    const ssize_t end = begin + partCount;
+    ssize_t size, partOffset, partCount, chunkSize;
+    ncclCollCbdPart(work, getShmemPtr(comm)->channelId, Proto::Id, sizeof(T), &size, &partOffset, &partCount, &chunkSize);
 
     const T* __restrict__ thisInput = (const T*)work->sendbuff;
     T* __restrict__ thisOutput = (T*)work->recvbuff;
@@ -100,9 +99,10 @@ namespace {
     Primitives<T, FUNC, Proto, NCCL_MAX_FC_ARITY-1, NCCL_MAX_FC_ARITY-1, 1, 0>
       prims(tid, nthreads, fc->peerRanks, fc->peerRanks, thisOutput, comm, work->redOpArg, getShmemPtr(comm)->groups, 0, 0, 0, NULL);
 
-    for (ssize_t chunkOffset = begin; chunkOffset < end; chunkOffset += chunkSize) {
+    for (ssize_t elemOffset = 0; elemOffset < partCount; elemOffset += chunkSize) {
+      const ssize_t chunkOffset = partOffset + elemOffset;
       ssize_t dstOffset = rank * size + chunkOffset;
-      int nelem = min(chunkSize, end-chunkOffset);
+      int nelem = min(chunkSize, partCount - elemOffset);
       prims.directCopySend(thisInput+chunkOffset, thisOutput+dstOffset, dstOffset, nelem);
       int totalElem = nranks * nelem;
       prims.directGather(thisOutput+chunkOffset, totalElem, nelem, size, chunkOffset);

@@ -192,7 +192,7 @@ struct alignas(16) ncclDevChannel {
   struct ncclDevChannelPeer** peers;
   struct ncclRing ring;
   struct ncclTree tree;
-  struct ncclTree collTree;
+  struct ncclTree collnetChain;
   struct ncclFC fc;
   uint64_t perKernelBatchCounter;
   uint64_t workCounter;
@@ -227,13 +227,20 @@ struct alignas(16) ncclDevWorkColl {
   uintptr_t recvbuffOffset;
   uintptr_t* sendbuffRmtAddrs;
   uintptr_t* recvbuffRmtAddrs;
-  // Continuous-byte-distribution scheduling. The lo and hi channels are of
-  // different size than the channels in the middle.
-  struct {
-    size_t countLo, countMid, countHi;
-    // Chunk counts where units are ncclProtoGrainSize(protocol) bytes
-    uint64_t chunkGrainsLo:21, chunkGrainsMid:21, chunkGrainsHi:21;
-  } cbd;
+  union {
+    // Continuous-byte-distribution scheduling. The lo and hi channels are of
+    // different size than the channels in the middle.
+    struct {
+      size_t countLo, countMid, countHi;
+      // Chunk counts where units are ncclProtoGrainSize(protocol) bytes
+      uint64_t chunkGrainsLo:21, chunkGrainsMid:21, chunkGrainsHi:21;
+    } cbd;
+    // CollNet scheduling. All channels divide work evenly.
+    struct {
+      size_t count; // Total size, not divided per channel.
+      uint32_t chunkCount;
+    } collnet;
+  };
   uint64_t redOpArg;
 #ifdef NO_TSM
   // Without thread shared memory, device primitives locate comm via work.
@@ -276,22 +283,6 @@ __host__ __device__ inline void ncclCollCbdPart(
     *partCount = work->cbd.countMid;
     *chunkCount = size_t(work->cbd.chunkGrainsMid) * eltPerGrain;
   }
-}
-
-// Preserve PPU's measured AllReduce tail policy without extending the work ABI.
-// Proto and eltSize are compile-time constants in each device specialization.
-__host__ __device__ inline size_t pcclAllReduceTailGrain(
-    const struct ncclDevWorkColl* work, int proto, int eltSize) {
-  int nthreads = work->nWarps * WARP_SIZE;
-  if (proto == NCCL_PROTO_LL) return nthreads * sizeof(uint64_t) / eltSize;
-  if (proto == NCCL_PROTO_LL128) {
-    return size_t(nthreads) * NCCL_LL128_SHMEM_ELEMS_PER_THREAD *
-        NCCL_LL128_DATAELEMS * sizeof(uint64_t) / NCCL_LL128_LINEELEMS / 2 / eltSize;
-  }
-#ifndef NO_EXTRA_WARP
-  nthreads -= WARP_SIZE;
-#endif
-  return (work->channelLo == work->channelHi ? nthreads * sizeof(uint64_t) : 16) / eltSize;
 }
 
 // unused now
@@ -374,8 +365,6 @@ struct ncclShmemGroup {
 struct alignas(16) ncclKernelComm {
   int rank;
   int nRanks;
-  // CollNet pairs channel c with c + nChannels/2, independently of task width.
-  int nChannels;
   int buffSizes[NCCL_NUM_PROTOCOLS];
   int* rankToLocalRank;
 
@@ -495,7 +484,7 @@ struct ncclChannel {
     struct {
       struct ncclRing ring;
       struct ncclTree tree;
-      struct ncclTree collTree;
+      struct ncclTree collnetChain;
       struct ncclFC fc;
 
       int id;

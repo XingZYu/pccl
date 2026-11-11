@@ -25,10 +25,8 @@ namespace {
     struct ncclRing* ring = &channel->ring;
 
     const int nranks = comm->nRanks;
-    ssize_t size, begin, partCount, chunkSize;
-    ncclCollCbdPart(work, getShmemPtr(comm)->channelId, Proto::Id, sizeof(T), &size, &begin, &partCount, &chunkSize);
-    const ssize_t end = begin + partCount;
-    const ssize_t loopSize = chunkSize;
+    ssize_t size, partOffset, partCount, chunkSize;
+    ncclCollCbdPart(work, getShmemPtr(comm)->channelId, Proto::Id, sizeof(T), &size, &partOffset, &partCount, &chunkSize);
 
     // Compute pointers
     const T * __restrict__ thisInput = (const T*)work->sendbuff;
@@ -37,12 +35,12 @@ namespace {
     Primitives<T, FUNC, Proto, 1, 1, 0, 0>
       prims(tid, nthreads, &ring->prev, &ring->next, NULL, comm, work->redOpArg, getShmemPtr(comm)->groups, 0, 0, 0, NULL);
 
-    for (ssize_t gridOffset = begin; gridOffset < end; gridOffset += loopSize) {
-      const ssize_t chunkOffset = gridOffset;
+    for (ssize_t elemOffset = 0; elemOffset < partCount; elemOffset += chunkSize) {
+      const ssize_t chunkOffset = partOffset + elemOffset;
 
       /////////////// begin ReduceScatter steps ///////////////
       ssize_t offset;
-      int nelem = min(chunkSize, end-chunkOffset);
+      int nelem = min(chunkSize, partCount - elemOffset);
       int rankDest;
 
       // step 0: push data to next GPU
@@ -82,9 +80,8 @@ namespace {
 
     const int rank = comm->rank;
     const int nranks = comm->nRanks;
-    ssize_t size, begin, partCount, chunkSize;
-    ncclCollCbdPart(work, getShmemPtr(comm)->channelId, Proto::Id, sizeof(T), &size, &begin, &partCount, &chunkSize);
-    const ssize_t end = begin + partCount;
+    ssize_t size, partOffset, partCount, chunkSize;
+    ncclCollCbdPart(work, getShmemPtr(comm)->channelId, Proto::Id, sizeof(T), &size, &partOffset, &partCount, &chunkSize);
 
     const T* __restrict__ thisInput = (const T*)work->sendbuff;
     T* __restrict__ thisOutput = (T*)work->recvbuff;
@@ -92,8 +89,9 @@ namespace {
     Primitives<T, FUNC, Proto, NCCL_MAX_FC_ARITY-1, NCCL_MAX_FC_ARITY-1, 0, 0>
       prims(tid, nthreads, fc->peerRanks, fc->peerRanks, NULL, comm, work->redOpArg, getShmemPtr(comm)->groups, 0, 0, 0, NULL);
 
-    for (ssize_t chunkOffset = begin; chunkOffset < end; chunkOffset += chunkSize) {
-      int nelem = min(chunkSize, end-chunkOffset);
+    for (ssize_t elemOffset = 0; elemOffset < partCount; elemOffset += chunkSize) {
+      const ssize_t chunkOffset = partOffset + elemOffset;
+      int nelem = min(chunkSize, partCount - elemOffset);
       int totalElem = nelem * nranks;
       prims.scatter(thisInput+chunkOffset, totalElem, nelem, size);
       prims.recvReduceCopy(thisInput+rank*size+chunkOffset, thisOutput+chunkOffset, nelem, /*postOp=*/true);

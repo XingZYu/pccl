@@ -24,10 +24,8 @@ namespace {
     struct ncclDevChannel* channel = &(getShmemPtr(comm)->channel);
     struct ncclRing* ring = &channel->ring;
 
-    ssize_t size, begin, partCount, chunkSize;
-    ncclCollCbdPart(work, getShmemPtr(comm)->channelId, Proto::Id, sizeof(T), &size, &begin, &partCount, &chunkSize);
-    const ssize_t end = begin + partCount;
-    const ssize_t loopSize = chunkSize;
+    ssize_t size, partOffset, partCount, chunkSize;
+    ncclCollCbdPart(work, getShmemPtr(comm)->channelId, Proto::Id, sizeof(T), &size, &partOffset, &partCount, &chunkSize);
     const int rank = ring->devUserRanks[0];
     const int nextRank = ring->devUserRanks[1];
     const int root = work->root;
@@ -39,9 +37,9 @@ namespace {
     Primitives<T, FUNC, Proto, 1, 1, 0, 0>
       prims(tid, nthreads, &ring->prev, &ring->next, NULL, comm, work->redOpArg, getShmemPtr(comm)->groups, 0, 0, 0, work);
 
-    for (ssize_t gridOffset = begin; gridOffset < end; gridOffset += loopSize) {
-      const ssize_t offset = gridOffset;
-      const int nelem = min(chunkSize, end - offset);
+    for (ssize_t elemOffset = 0; elemOffset < partCount; elemOffset += chunkSize) {
+      const ssize_t offset = partOffset + elemOffset;
+      const int nelem = min(chunkSize, partCount - elemOffset);
 
       if (rank == root) {
         if (thisInput == thisOutput) {
@@ -75,9 +73,8 @@ namespace {
     }
 #endif
 
-    ssize_t begin, partCount, chunkSize;
-    ncclCollCbdPart(work, getShmemPtr(comm)->channelId, Proto::Id, sizeof(T), (ssize_t*)nullptr, &begin, &partCount, &chunkSize);
-    const ssize_t end = begin + partCount;
+    ssize_t partOffset, partCount, chunkSize;
+    ncclCollCbdPart(work, getShmemPtr(comm)->channelId, Proto::Id, sizeof(T), (ssize_t*)nullptr, &partOffset, &partCount, &chunkSize);
 
     const T* __restrict__ thisInput = (const T*)work->sendbuff;
     T* __restrict__ thisOutput = (T*)work->recvbuff;
@@ -86,16 +83,18 @@ namespace {
       Primitives<T, FUNC, Proto, 0, NCCL_MAX_FC_ARITY-1, 1, 0>
         prims(tid, nthreads, NULL, fc->peerRanks, thisOutput, comm, work->redOpArg, getShmemPtr(comm)->groups, 0, 0, 0, work);
 
-      for (ssize_t offset = begin; offset < end; offset += chunkSize) {
-        int nelem = min(chunkSize, end-offset);
+      for (ssize_t elemOffset = 0; elemOffset < partCount; elemOffset += chunkSize) {
+        const ssize_t offset = partOffset + elemOffset;
+        int nelem = min(chunkSize, partCount - elemOffset);
         prims.directCopySend(thisInput+offset, thisOutput+offset, offset, nelem);
       }
     } else {
       Primitives<T, FUNC, Proto, 1, 0, 1, 0>
         prims(tid, nthreads, &root, NULL, thisOutput, comm, work->redOpArg, getShmemPtr(comm)->groups, 0, 0, 0, work);
 
-      for (ssize_t offset = begin; offset < end; offset += chunkSize) {
-        int nelem = min(chunkSize, end-offset);
+      for (ssize_t elemOffset = 0; elemOffset < partCount; elemOffset += chunkSize) {
+        const ssize_t offset = partOffset + elemOffset;
+        int nelem = min(chunkSize, partCount - elemOffset);
         prims.directRecv(thisOutput+offset, offset, nelem);
       }
     }

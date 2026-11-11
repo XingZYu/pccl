@@ -315,6 +315,7 @@ ncclResult_t ncclTopoTuneModel(ncclComm_t comm, int minCompCap, int maxCompCap, 
       for (int p=0; p<NCCL_NUM_PROTOCOLS; p++) {
         if (kernelEnabled[coll][a][p] == 0 || kernelEnabled[coll][a][p] > maxCompCap) continue;
         if (a == NCCL_ALGO_PAT && ((coll != ncclFuncAllGather && coll != ncclFuncReduceScatter) || p != NCCL_PROTO_SIMPLE || pcclPatEnable(comm) == 0)) continue;
+        if (a == NCCL_ALGO_COLLNET && (coll != ncclFuncAllReduce || p != NCCL_PROTO_SIMPLE)) continue;
         float speed = nNodes <= 2 || a == NCCL_ALGO_COLLNET ? graphs[a]->speedIntra : graphs[a]->speedInter;
         float busBw = graphs[a]->nChannels * speed;
 
@@ -344,8 +345,6 @@ ncclResult_t ncclTopoTuneModel(ncclComm_t comm, int minCompCap, int maxCompCap, 
         if (a == NCCL_ALGO_TREE && p == NCCL_PROTO_LL) busBw = std::min(busBw*1.0/3.8, llMaxBw);
         if (a == NCCL_ALGO_TREE && p == NCCL_PROTO_LL128) busBw = std::min(busBw * (nNodes == 1 ? 7.0/9.0 : 0.915 /*120.0/128.0*/), ll128MaxBwPerCh[coll]*graphs[a]->nChannels);
         if (a == NCCL_ALGO_COLLNET) busBw *= .9;
-        if (a == NCCL_ALGO_COLLNET && p == NCCL_PROTO_LL) busBw *= 1.0/6.0; // Take into account that GDR read is disabled on both sides
-        if (a == NCCL_ALGO_COLLNET && p == NCCL_PROTO_LL128) busBw = 0;  // CollNet does not support LL128
 
         // Convert bus BW to algorithm BW
         float ratio = (a == NCCL_ALGO_RING || a == NCCL_ALGO_FC) ? (1.0 * nRanks) / nsteps : .5;
