@@ -332,6 +332,18 @@ ncclResult_t ncclTasksRegAndEnqueue(ncclComm_t comm) {
     devWork.root = task->root;
     devWork.profilerEnabled = ncclProfilerPluginLoaded() && (task->eActivationMask & ncclProfileKernelCh);
 
+    // Standard kernel metadata is shared by every channel and CBD region.
+    // External kernels own their launch parameters and skip this initialization.
+    if (!task->isExtKernel) {
+      if (task->nThreads % WARP_SIZE != 0 || task->nThreads / WARP_SIZE >= 256) return ncclInternalError;
+      devWork.nWarps = task->nThreads / WARP_SIZE;
+      devWork.redOpArgIsPtr = task->opDev.scalarArgIsPtr;
+      devWork.redOpArg = task->opDev.scalarArg;
+#ifdef NO_TSM
+      devWork.comm = comm->devComm;
+#endif
+    }
+
     if (task->regBufType & NCCL_IPC_REG_BUFFER) {
       // task->regUsed is used by kernelPluginBuildParams
       task->regUsed = 1;
@@ -847,12 +859,9 @@ static ncclResult_t getLoopInfo(struct ncclInfo* info) {
   return ncclSuccess;
 }
 
-static ncclResult_t computeColl(struct ncclInfo* info, struct ncclDevWorkColl* work, struct ncclProxyOp* proxyOp,
-                                uint32_t* chunkGrains) {
-#ifdef NO_TSM
-  work->comm = info->comm->devComm;
-#endif
-
+// Return the payload chunk size in bytes and its matching proxy parameters.
+// Work initialization and descriptor encoding belong to the caller.
+static ncclResult_t calcCollChunking(struct ncclInfo* info, int* chunkSizeBytes, struct ncclProxyOp* proxyOp) {
   if (info->algorithm == NCCL_ALGO_COLLNET &&
       (info->coll != ncclFuncAllReduce || info->protocol != NCCL_PROTO_SIMPLE)) return ncclInvalidUsage;
 
@@ -866,14 +875,6 @@ static ncclResult_t computeColl(struct ncclInfo* info, struct ncclDevWorkColl* w
     info->nchunksPerLoop = (info->coll == ncclFuncAllGather || info->coll == ncclFuncReduceScatter ||
         (info->coll == ncclFuncAllReduce && info->protocol != NCCL_PROTO_LL)) ? info->comm->nRanks : 1;
   }
-
-  work->sendbuff = info->sendbuff;
-  work->recvbuff = info->recvbuff;
-  work->root = info->root;
-  if (info->nThreads % WARP_SIZE != 0 || info->nThreads / WARP_SIZE >= 256) return ncclInternalError;
-  work->nWarps = info->nThreads / WARP_SIZE;
-  work->redOpArgIsPtr = info->opFull.scalarArgIsPtr;
-  work->redOpArg = info->opFull.scalarArg;
 
   int stepSize   = info->comm->buffSizes[info->protocol]/NCCL_STEPS;
   const bool useTaskSteps = (info->algorithm == NCCL_ALGO_RING || info->algorithm == NCCL_ALGO_FC) &&
@@ -942,7 +943,7 @@ static ncclResult_t computeColl(struct ncclInfo* info, struct ncclDevWorkColl* w
       WARN("Collective chunk size %d cannot be represented in protocol grains %zu", chunkEffectiveSize, grainSize);
       return ncclInvalidArgument;
     }
-    *chunkGrains = chunkEffectiveSize / grainSize;
+    *chunkSizeBytes = chunkEffectiveSize;
   }
   if (info->comm->rank == 0) VERBOSE(NCCL_COLL, "Coll %d, size %ld -> nChannels: %d nThreads: %d, chunkSize %d (algo %d proto %d)\n",
       info->coll, info->nBytes, info->nChannels, info->nThreads, chunkSize, info->algorithm, info->protocol);
@@ -1774,16 +1775,15 @@ static ncclResult_t scheduleCollTasksToPlan(ncclComm_t comm, struct ncclKernelPl
       struct ncclProxyOp proxyOp = {}, proxyRegions[3] = {};
       info.funcIndex = FUNC_INDEX(info.coll, info.opFull.op, info.datatype, info.algorithm, info.protocol);
       if (isCollnet) {
-        uint32_t chunkGrains;
-        NCCLCHECK(computeColl(&info, devWork, &proxyOp, &chunkGrains));
-        devWork->collnet.chunkCount = size_t(chunkGrains) * ncclProtoGrainSize(info.protocol) /
-            ncclTypeSize(info.datatype);
+        int chunkSize;
+        NCCLCHECK(calcCollChunking(&info, &chunkSize, &proxyOp));
+        devWork->collnet.chunkCount = size_t(chunkSize) / ncclTypeSize(info.datatype);
       } else {
         const size_t counts[3] = {devWork->cbd.countLo, devWork->cbd.countMid, devWork->cbd.countHi};
         uint32_t chunks[3] = {};
         for (int part = 0; part < 3; ++part) {
           if (counts[part] == 0) continue;
-          // All other inputs and work fields are shared by the three regions.
+          // All other chunking inputs are shared by the three regions.
           // Equal counts therefore have identical chunk and proxy parameters.
           int previous = 0;
           while (previous < part && counts[previous] != counts[part]) ++previous;
@@ -1796,7 +1796,9 @@ static ncclResult_t scheduleCollTasksToPlan(ncclComm_t comm, struct ncclKernelPl
           partInfo.count = counts[part];
           partInfo.nBytes = ncclFuncMaxSendRecvCount(info.coll, comm->nRanks, counts[part]) * ncclTypeSize(info.datatype);
           partInfo.nChannels = 1;
-          NCCLCHECK(computeColl(&partInfo, devWork, &proxyRegions[part], &chunks[part]));
+          int chunkSize;
+          NCCLCHECK(calcCollChunking(&partInfo, &chunkSize, &proxyRegions[part]));
+          chunks[part] = chunkSize / ncclProtoGrainSize(info.protocol);
         }
         devWork->cbd.chunkGrainsLo = chunks[0];
         devWork->cbd.chunkGrainsMid = chunks[1];
