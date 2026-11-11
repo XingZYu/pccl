@@ -48,6 +48,29 @@ Common options:
 
 The build places `libpccl.so` in `build/lib/` and public headers in `build/include/`.
 
+## Compatibility after CollNet removal
+
+CollNet kernels, transport, topology, and plugin loading have been removed. Its legacy network
+plugin types and symbol macros remain declared for source compatibility, but are not used at runtime.
+Ordinary `pcclNetPlugin_v4/v5/v6` interfaces are unchanged. Remove `PCCL_COLLNET_ENABLE` /
+`NCCL_COLLNET_ENABLE` from launch scripts and remove `CollNet` from algorithm selections.
+Select a supported algorithm by name or use the default selection.
+
+`pcclConfig_t.collnetEnable` retains its original name, type, position, and initializer value.
+It remains ignored, matching its behavior before this removal. Existing assignments still compile.
+
+External tuners continue to use `pcclTunerPlugin_v1`, the existing callback layout, and their original
+algorithm IDs: Tree=0, Ring=1, CollNet=2, FC=3, PAT=4. The bundled tuner's configuration format is
+unchanged. Internal tables retain the same IDs and five slots, with slot 2 permanently disabled
+and its host/device function pointers null. No tuner ID conversion is needed. A tuner selection
+of the retired CollNet ID or an invalid algorithm/protocol falls back
+to the internal tuner. Existing non-CollNet tuner binaries and configurations do not need migration.
+
+Use the same PCCL build on all ranks and rebuild components using internal headers. Internal
+channel layouts and bootstrap graph metadata have changed. Algorithm and function indices are
+preserved, including the unused CollNet slots. Topology XML graph
+IDs remain Ring=0, Tree=1, and FC=3; these are separate from algorithm IDs.
+
 ## Testing
 
 For performance benchmarking and functional validation, use [pccl-tests](https://github.com/t-head/pccl-tests). With the T-Head SAIL SDK and PCCL environments configured, run:
