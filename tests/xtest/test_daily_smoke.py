@@ -5,8 +5,10 @@ import csv
 import json
 from pathlib import Path
 import re
+import tempfile
 import unittest
 
+import daily_export
 import run_cases
 
 
@@ -19,6 +21,16 @@ RETRY_ACTION = ROOT / '.github/actions/download-artifact-retry/action.yml'
 
 
 class DailySmokeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.full_temp = tempfile.TemporaryDirectory()
+        cls.full_input = daily_export.materialize_full_export(
+            FULL_INPUT, Path(cls.full_temp.name) / 'full')
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.full_temp.cleanup()
+
     def test_eleven_supported_single_node_suites_are_selected(self):
         selected = run_cases.load_inputs(INPUT, 'standard', nodes=1)
         self.assertEqual(len(selected['cases']), 11)
@@ -97,7 +109,7 @@ class DailySmokeTests(unittest.TestCase):
             run_cases.load_inputs(INPUT, 'notsm', nodes=1)
 
     def test_full_export_is_runner_scoped_and_available_as_an_explicit_dataset(self):
-        coverage = json.loads((FULL_INPUT / 'coverage.json').read_text())
+        coverage = json.loads((self.full_input / 'coverage.json').read_text())
         self.assertEqual(coverage['selected_cases'], 8899)
         self.assertEqual(coverage['skipped_cases'], 3391)
         self.assertEqual(len(coverage['selected_suites']), 34)
@@ -108,9 +120,9 @@ class DailySmokeTests(unittest.TestCase):
         self.assertIn('PCCL composite_test binary', skipped['composite_test_shm_single_node_suite'][0])
         expected = {1: 4565, 2: 1924, 4: 1691, 8: 710, 16: 9}
         for nodes, count in expected.items():
-            selected = run_cases.load_inputs(FULL_INPUT, 'standard', nodes=nodes)
+            selected = run_cases.load_inputs(self.full_input, 'standard', nodes=nodes)
             self.assertEqual(len(selected['cases']), count)
-        with (FULL_INPUT / 'standard.csv').open(newline='') as stream:
+        with (self.full_input / 'standard.csv').open(newline='') as stream:
             rows = list(csv.DictReader(stream))
         self.assertEqual(len(rows), 8899)
         self.assertEqual(sum('pcclCommAbortTest' in row['cmd'] for row in rows), 16)
@@ -164,7 +176,7 @@ class DailySmokeTests(unittest.TestCase):
         self.assertNotIn('setup_command:', single)
         self.assertIn("raise SystemExit('No non-zero RoCE GID is visible inside the worker')", single)
         self.assertIn('alixpu_peermem is not loaded; DMA-BUF support is still possible', single)
-        selected = run_cases.load_inputs(FULL_INPUT, 'standard', nodes=1,
+        selected = run_cases.load_inputs(self.full_input, 'standard', nodes=1,
                                         suite='device_api_shm_single_node_single_process_suite')
         self.assertEqual(len(selected['cases']), 26)
         self.assertNotIn('pull_request:', text)

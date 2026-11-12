@@ -89,6 +89,7 @@ jobs:
 
           sys.path.insert(0, 'tests/xtest')
           import case_group_cache
+          import daily_export
           import group_cases
           import run_cases
           from artifact_cache import PCCL_TESTS_REVISION, RUNNER_HASHES
@@ -97,6 +98,9 @@ jobs:
           if dataset not in ('smoke', 'full'):
               raise ValueError('Unsupported daily dataset')
           input_directory = Path(f'tests/xtest/daily-{dataset if dataset == "full" else "minimal"}-csv')
+          if dataset == 'full':
+              input_directory = daily_export.materialize_full_export(
+                  input_directory, Path('daily-full-materialized'))
           nodes = int(os.environ['NODES']) if os.environ['NODES'] else None
           suite = os.environ['SUITE'] or None
           if nodes is not None and nodes not in (1, 2, 4, 8, 16):
