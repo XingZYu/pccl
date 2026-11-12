@@ -36,7 +36,7 @@ typedef enum {
   ncclNumFuncs = 11
 } ncclFunc_t;
 
-#define NCCL_NUM_ALGORITHMS 5 // Tree/Ring/reserved/FC/PAT; keep stable algorithm IDs
+#define NCCL_NUM_ALGORITHMS 5 // Tree/Ring/CollNet(reserved)/FC/PAT; keep stable algorithm IDs
 #define NCCL_ALGO_UNDEF -1
 #define NCCL_ALGO_TREE 0
 #define NCCL_ALGO_RING 1
