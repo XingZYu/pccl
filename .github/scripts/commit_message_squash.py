@@ -66,6 +66,8 @@ def copilot_response(output):
     message = final_response(output, allow_tools=True).strip()
     if message.startswith('ERROR:'):
         raise ValueError('Copilot could not prepare a complete message body: ' + message[:500])
+    if sum(bool(line.strip()) for line in message.split('\n')) < 2:
+        raise ValueError('Expected a multiline squash commit body')
     return message + '\n'
 
 
