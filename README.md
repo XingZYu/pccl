@@ -50,26 +50,28 @@ The build places `libpccl.so` in `build/lib/` and public headers in `build/inclu
 
 ## Compatibility after CollNet removal
 
-CollNet kernels, transport, topology, and plugin loading have been removed. Its legacy network
-plugin types and symbol macros remain declared for source compatibility, but are not used at runtime.
-Ordinary `pcclNetPlugin_v4/v5/v6` interfaces are unchanged. Remove `PCCL_COLLNET_ENABLE` /
-`NCCL_COLLNET_ENABLE` from launch scripts and remove `CollNet` from algorithm selections.
-Select a supported algorithm by name or use the default selection.
+CollNet is no longer supported. `PCCL_COLLNET_ENABLE` / `NCCL_COLLNET_ENABLE` no longer enable it,
+and `CollNet` is disabled even when included in `PCCL_ALGO` / `NCCL_ALGO`.
+Remove these obsolete settings and use the default algorithm selection or a supported algorithm.
 
 `pcclConfig_t.collnetEnable` retains its original name, type, position, and initializer value.
 It remains ignored, matching its behavior before this removal. Existing assignments still compile.
 
-External tuners continue to use `pcclTunerPlugin_v1`, the existing callback layout, and their original
-algorithm IDs: Tree=0, Ring=1, CollNet=2, FC=3, PAT=4. The bundled tuner's configuration format is
-unchanged. Internal tables retain the same IDs and five slots, with slot 2 permanently disabled
-and its host/device function pointers null. No tuner ID conversion is needed. A tuner selection
-of the retired CollNet ID or an invalid algorithm/protocol falls back
-to the internal tuner. Existing non-CollNet tuner binaries and configurations do not need migration.
+The `pcclTunerPlugin_v1` callback layout and the bundled tuner's configuration format are unchanged.
+The core library preserves algorithm IDs: Tree=0, Ring=1, CollNet=2 (reserved and unsupported),
+FC=3, PAT=4. No algorithm ID remapping is required. When a tuner callback succeeds but selects
+CollNet or an out-of-range algorithm/protocol ID, PCCL falls back to internal tuning.
+Preserving these IDs does not make every algorithm/protocol combination valid for every collective
+or topology.
 
-Use the same PCCL build on all ranks and rebuild components using internal headers. Internal
-channel layouts and bootstrap graph metadata have changed. Algorithm and function indices are
-preserved, including the unused CollNet slots. Topology XML graph
-IDs remain Ring=0, Tree=1, and FC=3; these are separate from algorithm IDs.
+Ordinary `pcclNetPlugin_v4/v5/v6` interfaces are unchanged. Legacy CollNet plugin declarations
+remain available for source compatibility, but PCCL no longer loads CollNet plugins.
+
+All ranks in a communicator must use the same PCCL build. Rebuild components that depend on
+internal headers, as internal channel layouts have changed.
+
+Topology XML graph IDs remain Ring=0, Tree=1, and FC=3; ID 2 is reserved for the removed CollNet
+graph. These are separate from algorithm IDs.
 
 ## Testing
 
