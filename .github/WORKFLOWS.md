@@ -97,6 +97,8 @@ Maintainer can approve all modules on another author's PR.
 
 The gate checks existing approvals after the invitation run finishes, even if an invitation
 failed. It also refreshes whenever a review is submitted, edited or dismissed.
+Missing approvals list each Maintainer's current GitHub login and affected modules.
+The workflow summary retains the full list when it exceeds the status description limit.
 
 | File | Purpose |
 | --- | --- |
