@@ -88,7 +88,9 @@ ncclResult_t ncclTopoSearchInit(struct ncclTopoSystem* system);
 #define NCCL_TOPO_PATTERN_FC 5              // FC
 struct ncclTopoGraph {
   // Input / output
-  int id; // ring : 0, tree : 1, fc : 3 (XML graph IDs, not algorithm indices)
+  // XML graph IDs, not algorithm indices: Ring=0, Tree=1, FC=3.
+  // ID 2 was used by CollNet and remains reserved; do not reuse or renumber it.
+  int id;
   int pattern;
   int crossNic;
   int minChannels;
