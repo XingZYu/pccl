@@ -1826,13 +1826,17 @@ static ncclResult_t scheduleCollTasksToPlan(ncclComm_t comm, struct ncclKernelPl
         if (!isCollnet) {
           const int region = channelId == devWork->channelLo ? 0 : channelId == devWork->channelHi ? 2 : 1;
           proxyOp = proxyRegions[region];
-          size_t count, offset, bytes, chunkCount;
-          const size_t eltSize = ncclTypeSize(info.datatype);
-          ncclCollCbdPart(devWork, channelId, info.protocol, eltSize, &count, &offset, &bytes, &chunkCount);
-          VERBOSE(NCCL_COLL, "CBD %s %s: channels [%u,%u] channel %d offset %zu bytes %zu payload %zu steps %d workBytes %zu",
-                  ncclFuncToString(info.coll), ncclProtoStr[info.protocol], unsigned(devWork->channelLo),
-                  unsigned(devWork->channelHi), channelId, offset * eltSize, bytes * eltSize,
-                  chunkCount * eltSize, proxyOp.nsteps, sizeof(*devWork));
+#ifdef ENABLE_TRACE
+          if (ncclDebugLevel >= NCCL_LOG_TRACE && (ncclDebugMask & NCCL_COLL)) {
+            size_t count, offset, bytes, chunkCount;
+            const size_t eltSize = ncclTypeSize(info.datatype);
+            ncclCollCbdPart(devWork, channelId, info.protocol, eltSize, &count, &offset, &bytes, &chunkCount);
+            TRACE(NCCL_COLL, "CBD %s %s: channels [%u,%u] channel %d offset %zu bytes %zu payload %zu steps %d workBytes %zu",
+                    ncclFuncToString(info.coll), ncclProtoStr[info.protocol], unsigned(devWork->channelLo),
+                    unsigned(devWork->channelHi), channelId, offset * eltSize, bytes * eltSize,
+                    chunkCount * eltSize, proxyOp.nsteps, sizeof(*devWork));
+          }
+#endif
         }
         // Proxy
         proxyOp.task.coll = head;
