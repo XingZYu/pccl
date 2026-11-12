@@ -2217,7 +2217,11 @@ static ncclResult_t hostToDevRedOp(
       break;
     case ncclBfloat16:
       opFull->op = ncclDevPreMulSum;
+#if PCCL_HGGC_VERSION >= 20300
+      bf16 = __hg_float2bfloat16(float(1.0/comm->nRanks));
+#else
       bf16 = __float2bfloat16(float(1.0/comm->nRanks));
+#endif
       break;
     case ncclFloat32:
       opFull->op = ncclDevPreMulSum;

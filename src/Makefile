@@ -182,6 +182,7 @@ $(INCDIR)/pccl.h : pccl.h.in
 	    -e "s/\$${pccl:Patch}/$(PCCL_PATCH)/g" \
 	    -e "s/\$${pccl:Suffix}/$(PCCL_SUFFIX)/g" \
 	    -e "s/\$${pccl:Version}/$(PCCL_VERSION_CODE)/g" \
+	    -e "s/\$${pccl:HggcVersion}/$(PCCL_HGGC_VERSION)/g" \
 	    $< > $@
 
 $(LIBDIR)/$(LIBTARGET): $(LIBOBJ) $(DEVICELIB)
