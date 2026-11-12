@@ -85,7 +85,7 @@ def fetch_pr_diff(api, pr):
         if not patch:
             file["patch_omitted"] = "GitHub API did not provide a patch"
             continue
-        lines = patch.splitlines()
+        lines = patch.split("\n")
         if (sum(line.startswith("+") for line in lines) != file["additions"] or
                 sum(line.startswith("-") for line in lines) != file["deletions"]):
             raise ValueError("Incomplete PR patch")
