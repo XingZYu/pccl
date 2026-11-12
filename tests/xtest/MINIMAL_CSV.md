@@ -112,9 +112,6 @@ never sufficient.
 `daily-full-csv` currently contains 8,899 standard Cases from 34 Suites, with
 unsupported or out-of-scope selections recorded in `coverage.json`. The notsm
 daily profile is intentionally empty.
-Its large `standard.csv` is stored as complete-row text parts under `parts/`;
-prepare reconstructs the identical CSV before validation and execution so
-review tooling receives bounded patches without changing any Case content.
 
 `group_cases.py` derives deterministic execution groups by profile, node count,
 cards per node and shared environment, then splits large groups by
